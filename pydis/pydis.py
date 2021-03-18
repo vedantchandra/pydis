@@ -268,6 +268,12 @@ def overscanbias(img, cols=(1,), rows=(1,)):
     return bias
 
 
+def smooth(y, box_pts):
+    box = np.ones(box_pts)/box_pts
+    y_smooth = np.convolve(y, box, mode='same')
+    return y_smooth
+
+
 def flatcombine(flatlist, bias, output='FLAT.fits', trim=True, mode='spline',
                 display=True, flat_poly=5, response=True, Saxis=1):
     """
@@ -342,6 +348,16 @@ def flatcombine(flatlist, bias, output='FLAT.fits', trim=True, mode='spline',
     # do median across whole stack of flat images
     flat_stack = np.nanmedian(all_data, axis=2)
 
+    # print(flat_stack.shape)
+    # print(flat_stack[ok,:].shape)
+    # print(ok)
+
+    if display:
+
+        plt.figure()
+        plt.imshow(flat_stack)
+        plt.show()
+
     # define the wavelength axis
     Waxis = 0
     # add a switch in case the spatial/wavelength axis is swapped
@@ -352,7 +368,7 @@ def flatcombine(flatlist, bias, output='FLAT.fits', trim=True, mode='spline',
         xdata = np.arange(all_data.shape[1]) # x pixels
 
         # sum along spatial axis, smooth w/ 5pixel boxcar, take log of summed flux
-        flat_1d = np.log10(convolve(flat_stack[ok,:].mean(axis=Waxis), Box1DKernel(5)))
+        flat_1d = np.log10(smooth(flat_stack[ok[0],:].mean(axis=Waxis), 5))
 
         if mode=='spline':
             spl = UnivariateSpline(xdata, flat_1d, ext=0, k=2 ,s=0.001)
@@ -395,7 +411,7 @@ def flatcombine(flatlist, bias, output='FLAT.fits', trim=True, mode='spline',
 
 def ap_trace(img, fmask=(1,), nsteps=20, interac=False,
              recenter=False, prevtrace=(0,), bigbox=15,
-             Saxis=1, display=False):
+             Saxis=1, display=False, peak_guess = None, plot_ind = False):
     """
     Trace the spectrum aperture in an image
 
@@ -465,7 +481,10 @@ def ap_trace(img, fmask=(1,), nsteps=20, interac=False,
     ztot = img_sm.sum(axis=Saxis)[ydata]
     yi = np.arange(img.shape[Waxis])[ydata]
     peak_y = yi[np.nanargmax(ztot)]
-    peak_guess = [np.nanmax(ztot), np.nanmedian(ztot), peak_y, 2.]
+    if peak_guess is None:
+        peak_guess = [np.nanmax(ztot), np.nanmedian(ztot), peak_y, 2.]
+    else:
+        peak_guess = [ztot[peak_guess], np.nanmedian(ztot), peak_guess, 2.] # IF user supplies peak guess. 
 
     #-- allow interactive mode, if mult obj on slit
     if interac is True and recenter is False:
@@ -512,15 +531,15 @@ def ap_trace(img, fmask=(1,), nsteps=20, interac=False,
 
     #-- fit a Gaussian to peak
     popt_tot, pcov = curve_fit(_gaus, yi[np.isfinite(ztot)], ztot[np.isfinite(ztot)], p0=peak_guess)
-    #-- only allow data within a box around this peak
-    ydata2 = ydata[np.where((ydata>=popt_tot[2] - popt_tot[3]*bigbox) &
-                            (ydata<=popt_tot[2] + popt_tot[3]*bigbox))]
+
+    ydata2 = ydata
 
     ztot = img_sm.sum(axis=Saxis)[ydata2]
     yi = np.arange(img.shape[Waxis])[ydata2]
     # define the X-bin edges
     xbins = np.linspace(0, img.shape[Saxis], nsteps, dtype='int')
     ybins = np.zeros_like(xbins, dtype='int')
+
 
     for i in range(0,len(xbins)-1):
         #-- fit gaussian w/i each window
@@ -529,13 +548,23 @@ def ap_trace(img, fmask=(1,), nsteps=20, interac=False,
         else:
             zi = img_sm[xbins[i]:xbins[i+1], ydata2].sum(axis=Saxis)
 
-        pguess = [np.nanmax(zi), np.nanmedian(zi), yi[np.nanargmax(zi)], 2.]
+
+        pguess = [np.nanmax(zi), np.nanmedian(zi), yi[np.nanargmax(zi)], 1.]
+
         popt,pcov = curve_fit(_gaus, yi[np.isfinite(ztot)], zi[np.isfinite(ztot)], p0=pguess)
+
+        if plot_ind:
+            plt.figure()
+            plt.plot(yi[np.isfinite(ztot)], zi[np.isfinite(ztot)])
+            plt.plot(yi[np.isfinite(ztot)], _gaus(yi[np.isfinite(ztot)], *popt))
+            plt.axvline(popt[2])
+            plt.show()
 
         # if gaussian fits off chip, then use chip-integrated answer
         if (popt[2] <= min(ydata2)+25) or (popt[2] >= max(ydata2)-25):
             ybins[i] = popt_tot[2]
             popt = popt_tot
+            print('failed. using chip answer')
         else:
             ybins[i] = popt[2]
 
@@ -792,7 +821,7 @@ def lines_to_surface(img, xcent, ycent, wcent,
         xpix = np.arange(xsz)
 
         for i in np.arange(ycent.min(), ycent.max()):
-            x = np.where((ycent == i))
+            x = np.where((ycent == i))[0]
 
             x_u, ind_u = np.unique(xcent[x], return_index=True)
 
@@ -811,8 +840,22 @@ def lines_to_surface(img, xcent, ycent, wcent,
         wfit = np.zeros_like(img)
         xpix = np.arange(xsz)
 
+        print(xcent)
+        print(ycent)
+        print(wcent)
+
+        print(ycent.min(), ycent.max(), ycent)
+
         for i in np.arange(ycent.min(), ycent.max()):
-            x = np.where((ycent == i))
+            x = np.where((ycent == i))[0]
+
+            print(x)
+
+            if len(x) == 0:
+                wfit[int(i),:] = 0
+                print('x has length 0')
+                continue
+
             coeff = np.polyfit(xcent[x], wcent[x], fit_order)
             wfit[int(i),:] = np.polyval(coeff, xpix)
     return wfit
@@ -906,14 +949,14 @@ def ap_extract(img, trace, apwidth=8, skysep=3, skywidth=7, skydeg=0,
             skysubflux[i] = np.nanmean(z)*(apwidth*2.0 + 1)
 
         #-- finally, compute the error in this pixel
-        sigB = np.std(z) # stddev in the background data
+        sigB = (np.quantile(z, 0.84) - np.quantile(z, 0.16)) / 2 # stddev in the background data
         N_B = len(y) # number of bkgd pixels
         N_A = apwidth*2. + 1 # number of aperture pixels
 
         # based on aperture phot err description by F. Masci, Caltech:
         # http://wise2.ipac.caltech.edu/staff/fmasci/ApPhotUncert.pdf
-        fluxerr[i] = np.sqrt(np.sum((onedspec[i]-skysubflux[i])/coaddN) +
-                             (N_A + N_A**2. / N_B) * (sigB**2.))
+        fluxerr[i] = np.sqrt(np.sum((onedspec[i]-(skysubflux[i]))/coaddN) +
+                              (N_A + N_A**2. / N_B) * (sigB**2.))
 
     return onedspec, skysubflux, fluxerr
 
@@ -1366,6 +1409,12 @@ def HeNeAr_fit(calimage, linelist='apohenear.dat', interac=True,
     xcent_big, ycent_big, wcent_big = line_trace(img, pcent, wcent,
                                                  fmask=fmask, display=display)
 
+    plt.figure()
+    plt.imshow(img)
+    plt.show()
+
+
+
     #-- turn these vertical traces in to a whole chip wavelength solution
     wfit = lines_to_surface(img, xcent_big, ycent_big, wcent_big,
                             mode=mode, fit_order=fit_order)
@@ -1494,7 +1543,7 @@ def AirmassCor(obj_wave, obj_flux, airmass, airmass_file='apoextinct.dat'):
     return obj_flux * airmass_ext
 
 
-def DefFluxCal(obj_wave, obj_flux, stdstar='', mode='spline', polydeg=9,
+def DefFluxCal(obj_wave, obj_flux, std_wave, std_mag, std_wth, std_stdstar='', mode='spline', polydeg=9,
                display=False):
     """
 
@@ -1533,102 +1582,92 @@ def DefFluxCal(obj_wave, obj_flux, stdstar='', mode='spline', polydeg=9,
         The sensitivity function for the standard star
 
     """
-    stdstar2 = stdstar.lower()
-    std_dir = os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                        'resources', 'onedstds')
 
-    if os.path.isfile(os.path.join(std_dir, stdstar2)):
-        std_wave, std_mag, std_wth = np.genfromtxt(os.path.join(std_dir, stdstar2),
-                                                   skip_header=1, unpack=True)
-        # standard star spectrum is stored in magnitude units
-        std_flux = _mag2flux(std_wave, std_mag)
+    # standard star spectrum is stored in magnitude units
+    std_flux = _mag2flux(std_wave, std_mag)
 
-        # Automatically exclude these obnoxious lines...
-        balmer = np.array([6563, 4861, 4341], dtype='float')
+    # Automatically exclude these obnoxious lines...
+    balmer = np.array([6563, 4861, 4341], dtype='float')
 
-        # down-sample (ds) the observed flux to the standard's bins
-        obj_flux_ds = []
-        obj_wave_ds = []
-        std_flux_ds = []
-        for i in range(len(std_wave)):
-            rng = np.where((obj_wave >= std_wave[i] - std_wth[i] / 2.0) &
-                           (obj_wave < std_wave[i] + std_wth[i] / 2.0))
-            IsH = np.where((balmer >= std_wave[i] - std_wth[i] / 2.0) &
-                           (balmer < std_wave[i] + std_wth[i] / 2.0))
+    # down-sample (ds) the observed flux to the standard's bins
+    obj_flux_ds = []
+    obj_wave_ds = []
+    std_flux_ds = []
+    for i in range(len(std_wave)):
+        rng = np.where((obj_wave >= std_wave[i] - std_wth[i] / 2.0) &
+                       (obj_wave < std_wave[i] + std_wth[i] / 2.0))
+        IsH = np.where((balmer >= std_wave[i] - std_wth[i] / 2.0) &
+                       (balmer < std_wave[i] + std_wth[i] / 2.0))
 
-            # does this bin contain observed spectra, and no Balmer line?
-            if (len(rng[0]) > 1) and (len(IsH[0]) == 0):
-                # obj_flux_ds.append(np.sum(obj_flux[rng]) / std_wth[i])
-                obj_flux_ds.append( np.nanmean(obj_flux[rng]) )
-                obj_wave_ds.append(std_wave[i])
-                std_flux_ds.append(std_flux[i])
+        # does this bin contain observed spectra, and no Balmer line?
+        if (len(rng[0]) > 1) and (len(IsH[0]) == 0):
+            # obj_flux_ds.append(np.sum(obj_flux[rng]) / std_wth[i])
+            obj_flux_ds.append( np.nanmean(obj_flux[rng]) )
+            obj_wave_ds.append(std_wave[i])
+            std_flux_ds.append(std_flux[i])
 
 
-        # the ratio between the standard star flux and observed flux
-        # has units like erg / counts
-        ratio = np.abs(np.array(std_flux_ds, dtype='float') /
-                       np.array(obj_flux_ds, dtype='float'))
+    # the ratio between the standard star flux and observed flux
+    # has units like erg / counts
+    ratio = np.abs(np.array(std_flux_ds, dtype='float') /
+                   np.array(obj_flux_ds, dtype='float'))
 
 
-        # interp calibration (sensfunc) on to object's wave grid
-        # can use 3 types of interpolations: linear, cubic spline, polynomial
+    # interp calibration (sensfunc) on to object's wave grid
+    # can use 3 types of interpolations: linear, cubic spline, polynomial
 
-        # if invalid mode selected, make it spline
-        if mode not in ('linear', 'spline', 'poly'):
-            mode = 'spline'
-            print("WARNING: invalid mode set in DefFluxCal. Changing to spline")
+    # if invalid mode selected, make it spline
+    if mode not in ('linear', 'spline', 'poly'):
+        mode = 'spline'
+        print("WARNING: invalid mode set in DefFluxCal. Changing to spline")
 
-        # actually fit the log of this sensfunc ratio
-        # since IRAF does the 2.5*log(ratio), everything in mag units!
-        LogSensfunc = np.log10(ratio)
+    # actually fit the log of this sensfunc ratio
+    # since IRAF does the 2.5*log(ratio), everything in mag units!
+    LogSensfunc = np.log10(ratio)
 
-        # interpolate back on to observed wavelength grid
-        if mode=='linear':
-            sensfunc2 = np.interp(obj_wave, obj_wave_ds, LogSensfunc)
-        elif mode=='spline':
-            spl = UnivariateSpline(obj_wave_ds, LogSensfunc, ext=0, k=2 ,s=0.0025)
-            sensfunc2 = spl(obj_wave)
-        elif mode=='poly':
-            fit = np.polyfit(obj_wave_ds, LogSensfunc, polydeg)
-            sensfunc2 = np.polyval(fit, obj_wave)
+    # interpolate back on to observed wavelength grid
+    if mode=='linear':
+        sensfunc2 = np.interp(obj_wave, obj_wave_ds, LogSensfunc)
+    elif mode=='spline':
+        spl = UnivariateSpline(obj_wave_ds, LogSensfunc, ext=0, k=2 ,s=0.0025)
+        sensfunc2 = spl(obj_wave)
+    elif mode=='poly':
+        fit = np.polyfit(obj_wave_ds, LogSensfunc, polydeg)
+        sensfunc2 = np.polyval(fit, obj_wave)
 
-        if display is True:
-            plt.figure()
-            plt.plot(std_wave, std_flux, 'r', alpha=0.5, label='standard flux')
-            plt.xlabel('Wavelength')
-            plt.ylabel('Standard Star Flux')
-            plt.legend()
-            plt.show()
+    if display is True:
+        plt.figure()
+        plt.plot(std_wave, std_flux, 'r', alpha=0.5, label='standard flux')
+        plt.xlabel('Wavelength')
+        plt.ylabel('Standard Star Flux')
+        plt.legend()
+        plt.show()
 
-            plt.figure()
-            plt.plot(obj_wave, obj_flux, 'k', label='observed counts')
-            plt.plot(obj_wave_ds, obj_flux_ds, 'bo',
-                    label='downsample observed')
-            plt.xlabel('Wavelength')
-            plt.ylabel('Observed Counts/S')
-            plt.legend()
-            plt.show()
+        plt.figure()
+        plt.plot(obj_wave, obj_flux, 'k', label='observed counts')
+        plt.plot(obj_wave_ds, obj_flux_ds, 'bo',
+                label='downsample observed')
+        plt.xlabel('Wavelength')
+        plt.ylabel('Observed Counts/S')
+        plt.legend()
+        plt.show()
 
-            plt.figure()
-            plt.plot(obj_wave_ds, LogSensfunc, 'ko', label='sensfunc')
-            plt.plot(obj_wave, sensfunc2, label='interpolated sensfunc')
-            plt.xlabel('Wavelength')
-            plt.ylabel('log Sensfunc')
-            plt.legend()
-            plt.show()
+        plt.figure()
+        plt.plot(obj_wave_ds, LogSensfunc, 'ko', label='sensfunc')
+        plt.plot(obj_wave, sensfunc2, label='interpolated sensfunc')
+        plt.xlabel('Wavelength')
+        plt.ylabel('log Sensfunc')
+        plt.legend()
+        plt.show()
 
-            plt.figure()
-            plt.plot(obj_wave, obj_flux*(10**sensfunc2),'k',
-                        label='applied sensfunc')
-            plt.plot(std_wave, std_flux, 'ro', alpha=0.5, label='standard flux')
-            plt.xlabel('Wavelength')
-            plt.ylabel('Standard Star Flux')
-            plt.legend()
-            plt.show()
-    else:
-        sensfunc2 = np.zeros_like(obj_wave)
-        print('ERROR: in DefFluxCal no valid standard star file found at ')
-        print(os.path.join(std_dir, stdstar2))
+        plt.figure()
+        plt.plot(obj_wave, obj_flux*(10**sensfunc2),'k',
+                    label='applied sensfunc')
+        plt.plot(std_wave, std_flux, 'ro', alpha=0.5, label='standard flux')
+        plt.xlabel('Wavelength')
+        plt.ylabel('Standard Star Flux')
+        plt.legend()
+        plt.show()
 
     return 10**sensfunc2
 
