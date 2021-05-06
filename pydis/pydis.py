@@ -549,9 +549,11 @@ def ap_trace(img, fmask=(1,), nsteps=20, interac=False,
             zi = img_sm[xbins[i]:xbins[i+1], ydata2].sum(axis=Saxis)
 
 
-        pguess = [np.nanmax(zi), np.nanmedian(zi), yi[np.nanargmax(zi)], 1.]
+        zifilt = scipy.signal.medfilt(zi, 3) # remove random noise when fitting trace
+        pguess = [np.nanmax(zi), np.nanmedian(zi), yi[np.nanargmax(zifilt)], 3.]
+        print(pguess)
 
-        popt,pcov = curve_fit(_gaus, yi[np.isfinite(ztot)], zi[np.isfinite(ztot)], p0=pguess)
+        popt,pcov = curve_fit(_gaus, yi[np.isfinite(ztot)], zi[np.isfinite(ztot)], p0=pguess, maxfev = 10000)
 
         if plot_ind:
             plt.figure()
@@ -837,22 +839,20 @@ def lines_to_surface(img, xcent, ycent, wcent,
             wfit[int(i),:] = spl(xpix)
 
     elif mode=='poly':
-        wfit = np.zeros_like(img)
+        wfit = np.zeros_like(img).astype(np.float64)
         xpix = np.arange(xsz)
 
-        print(xcent)
-        print(ycent)
-        print(wcent)
+        # print(xcent)
+        # print(ycent)
+        # print(wcent)
 
-        print(ycent.min(), ycent.max(), ycent)
+        # print(ycent.min(), ycent.max(), ycent)
 
         for i in np.arange(ycent.min(), ycent.max()):
             x = np.where((ycent == i))[0]
 
-            print(x)
-
             if len(x) == 0:
-                wfit[int(i),:] = 0
+                wfit[int(i),:] = 0.0
                 print('x has length 0')
                 continue
 
@@ -1206,7 +1206,7 @@ def HeNeAr_fit(calimage, linelist='apohenear.dat', interac=True,
                             if (len(nearby[0]) > 4) and (kill is None):
                                 imax = np.nanargmax(slice[nearby])
 
-                                pguess = (np.nanmax(slice[nearby]), np.nanmedian(slice), xraw[nearby][imax], 2.)
+                                pguess = (np.nanmax(slice[nearby]), np.nanmedian(slice), xraw[nearby][imax], 3.)
                                 try:
                                     popt,pcov = curve_fit(_gaus, xraw[nearby], slice[nearby], p0=pguess)
                                     self.ax.plot(wtemp[int(popt[2])], popt[0], 'r|')
@@ -1452,7 +1452,8 @@ def mapwavelength(trace, wavemap, mode='spline2d'):
     elif mode=='poly' or mode=='spline':
         trace_wave = np.zeros_like(trace)
         for i in range(len(trace)):
-            trace_wave[i] = np.interp(trace[i], range(wavemap.shape[0]), wavemap[:,i])
+            wli = np.interp(trace[i], np.arange(wavemap.shape[0]), wavemap[:,i])
+            trace_wave[i] = wli
 
     ## using 2d polyfit
     # trace_wave = polyval2d(np.arange(len(trace)), trace, wavemap)
